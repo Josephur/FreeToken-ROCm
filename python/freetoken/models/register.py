@@ -137,9 +137,25 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         "freetoken.models.gpt_oss",
         "GptOssForCausalLM",
     ),
+    # GGUF gpt-oss: llama.cpp MXFP4 experts repacked at load into the HF
+    # mxfp4_triton layout; same model class end to end.
+    "GptOssGGUFForCausalLM": ModelSpec(
+        "freetoken.models.gpt_oss",
+        "GptOssForCausalLM",
+        parse_config="parse_gguf_config",
+        iter_weights="iter_gguf_weights",
+    ),
     "Glm4MoeForCausalLM": ModelSpec(
         "freetoken.models.glm4_moe",
         "Glm4MoeForCausalLM",
+    ),
+    # GGUF Qwen3.5/3.6 hybrid MoE (llama.cpp arch qwen35moe): experts stay in native
+    # GGUF quant banks (offload backends), dense weights dequant to bf16.
+    "Qwen35MoeGGUFForCausalLM": ModelSpec(
+        "freetoken.models.qwen3_5_moe",
+        "Qwen3_5MoEForCausalLM",
+        parse_config="parse_gguf_config",
+        iter_weights="iter_gguf_weights",
     ),
     # GLM-5.2 (model_type glm_moe_dsa): DeepSeek-V3.2-class MLA + DSA sparse attention
     # with GLM-4-style sigmoid/noaux_tc MoE routing; NVFP4 routed experts served from

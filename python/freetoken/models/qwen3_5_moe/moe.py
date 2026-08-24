@@ -68,8 +68,15 @@ class Qwen3_5MoE(BaseOP):
         weight_format = (
             "fp8_block" if getattr(config, "expert_quant", "none") == "fp8_block" else "bf16"
         )
+        extra_attrs = {}
+        # GGUF-sourced experts: the packed banks' ggml types ride on the layer so
+        # _expert_gemm dispatches the borrowed ggml MoE kernels with the real types.
+        bank_types = getattr(config, "gguf_expert_bank_types", None)
+        if bank_types is not None:
+            extra_attrs["gguf_expert_types"] = (bank_types["gate_up"], bank_types["down"])
         self.experts = make_moe_layer(
-            config, layer_id=layer_id, renormalize=True, weight_format=weight_format
+            config, layer_id=layer_id, renormalize=True, weight_format=weight_format,
+            extra_attrs=extra_attrs,
         )
         self.gate = LinearReplicated(config.hidden_size, config.num_experts, has_bias=False)
         self.shared_expert = _SharedExpert(

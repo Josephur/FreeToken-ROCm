@@ -227,3 +227,10 @@ benchmarks/cross_framework
 
 # local e2e/bench artifacts (harnesses may run with repo cwd)
 /results/
+
+# Windows/ROCm port: local wheels and downloaded models
+/rocm-wheels/
+*.whl
+/models/
+*.gguf
+/.tvm-ffi-cache/

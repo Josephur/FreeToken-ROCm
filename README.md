@@ -8,7 +8,7 @@
 
 > [!IMPORTANT]
 > **This fork: native Windows + AMD ROCm port** (`FreeToken-rocm-test`).
-> Verified end-to-end on an AMD Radeon RX 9070 XT (gfx1201 / RDNA4, 16 GB, Windows 11):
+> Verified end-to-end on an AMD Radeon RX 9070 XT & RX 9060 XT (gfx1201 / gfx1200 / RDNA4, 16 GB, Windows 11):
 > `ft serve` loads dense HF safetensors models, serves OpenAI-compatible chat
 > completions (including SSE token streaming) through Triton-on-AMD attention
 > kernels and hipcc/tvm-ffi JIT-compiled CUDA-C++ kernels. See
@@ -77,7 +77,18 @@ prefill, decode (~57 tok/s bf16 3B), SSE token streaming, and the bundled mini w
 | Qwen2.5-3B-Instruct | BF16 | full VRAM | **~72 tok/s** | stable, coherent; SSE first-token ~0.4 s |
 | Qwen2.5-7B-Instruct | BF16 | `--num-pages 4096` | **~16 tok/s** | weights leave only ~1.5 GB headroom |
 | gpt-oss-20b (MoE) | MXFP4 experts | `--moe-backend fused --num-pages 4096 --cuda-graph-max-bs 0` | **~12 tok/s** | stable in eager mode; see graph bug below |
-| gpt-oss GGUF files | Q8_0 | - | - | rejected: GGUF loader supports `gemma4` arch only |
+| gpt-oss GGUF files | Q8_0 | - | - | rejected: no MoE GGUF adapter yet (dense llama/qwen2/mistral/qwen3/gemma4 supported) |
+
+**RX 9060 XT (gfx1200, 16 GB) — packed GGUF, verified end-to-end:**
+
+| Model | Precision | Config | Decode speed | Notes |
+|---|---|---|---|---|
+| Qwen2.5-3B-Instruct GGUF | Q4_K_M (packed) | **defaults** (graphs on, HIP MMVQ replayed) | **~93.6 tok/s** | weights stay packed (~1.9 GB VRAM); HIP kernels replay fine on gfx1200 — the graph-replay crash is gfx1201-specific, and the auto backend now falls back to Triton only there |
+| Qwen2.5-3B-Instruct GGUF (2-shard split) | Q4_K_M (packed) | defaults | ~93-95 tok/s | llama.cpp `-NNNNN-of-NNNNN.gguf` split sets load natively (pass any shard) |
+| Qwen2.5-3B-Instruct GGUF | Q4_K_M (packed) | `--cuda-graph-max-bs 0` (eager HIP kernels) | ~24.4 tok/s | launch-overhead-bound; use if graphs must be off |
+| Qwen2.5-3B-Instruct GGUF | Q4_K_M (packed) | `FT_GGUF_BACKEND=triton` | ~6.6-7.6 tok/s | all-Triton fallback, useful for kernel triage |
+| **gpt-oss-20b GGUF** (MoE) | MXFP4 experts (packed) | `--moe-backend fused --num-pages 4096` (graphs ON) | **~61 tok/s** | harmony reasoning parsed correctly; graph capture AND replay of the MXFP4 MoE kernels work on gfx1200 (the graph-replay crash is gfx1201-only) |
+| gpt-oss-20b GGUF (MoE) | MXFP4 experts (packed) | same, `--cuda-graph-max-bs 0` (eager) | ~20.7 tok/s | fallback if graphs misbehave |
 
 Decode is memory-bandwidth-bound: BF16 3B moves ~6 GB/token against ~640 GB/s,
 so ~72 tok/s is near ceiling for this precision on one card. Quantized GGUF
@@ -130,11 +141,16 @@ pip install -e <path-to-this-repo> --no-deps --no-build-isolation
 
 | Switch | Example value | Purpose |
 |---|---|---|
-| `HIP_PATH` | `<rocm-root>` | locates `hipcc`, HIP libs for JIT builds and linking |
-| `TRITON_OVERRIDE_ARCH` | `gfx1201` | forces Triton codegen target |
-| `TVM_FFI_ROCM_ARCH_LIST` | `gfx1201` | tvm-ffi emits `--offload-arch=<arch>` (else gfx906 default -> broken kernels) |
-| `ROCM_SDK_TARGET_FAMILY` | `gfx1201` | device family for the rocm-sdk wheel runtime (nightly-only) |
-| `CC` | `<rocm-root>\lib\llvm\bin\clang.EXE` | host compiler for JIT extensions |
+| `HIP_PATH` | `<repo>\.venv\Lib\site-packages\_rocm_sdk_core` | locates `hipcc`, HIP libs for JIT builds and linking. Use the venv SDK, NOT a machine-wide HIP SDK install — mixed toolchains break JIT builds |
+| `TRITON_OVERRIDE_ARCH` | `gfx1200` | forces Triton codegen target (`gfx1200` = RX 9060 XT, `gfx1201` = RX 9070 XT) |
+| `TVM_FFI_ROCM_ARCH_LIST` | `gfx1200` | tvm-ffi emits `--offload-arch=<arch>` (else gfx906 default -> broken kernels) |
+| `ROCM_SDK_TARGET_FAMILY` | `gfx1200` | device family for the rocm-sdk wheel runtime (nightly-only) |
+| `PYTORCH_ROCM_ARCH` | `gfx1200` | arch for torch `cpp_extension` JIT builds (the packed-GGUF HIP kernels) |
+| `CC` | `<rocm-root>\lib\llvm\bin\clang-cl.exe` | host compiler for JIT stubs. Must be `clang-cl` (MSVC driver), NOT `clang` — triton-windows passes MSVC-style args |
+| `HIP_DEVICE_LIB_PATH` | `<rocm-root>\lib\llvm\amdgcn\bitcode` | ROCm device bitcode for direct-clang HIP compiles |
+| `TVM_FFI_CACHE_DIR` | `<repo>\.tvm-ffi-cache` | JIT build dir; MUST be space-free (default `~/.cache` breaks ninja when the Windows username contains a space) |
+| `ROCM_HOME`/`ROCM_PATH` | `<rocm-root>` | toolkit home for tvm-ffi / torch; also prepend `<rocm-root>\bin` to `PATH` so the venv `hipcc` wins over any system ROCm |
+| `FT_GGUF_BACKEND` | unset / `triton` / `hip` | packed-GGUF matmul backend; unset (recommended) = HIP kernels everywhere except under graph capture on gfx1201, where the driver crashes replaying them. Defaults give ~93.6 tok/s on gfx1200 |
 | `FREETOKEN_SKIP_CUDA_EXT` | `1` | build-time: install without nvcc/CUDA extensions |
 | `--num-pages N` | e.g. `4096` | caps KV cache pages so large dense models fit in VRAM |
 
@@ -193,11 +209,46 @@ quantized in VRAM (no bf16 expansion). Approach and state:
   `GGML_QUANT_SIZES`; plus MXFP4 and ROCmFPX (types 100–108) dequant support.
 - Adapter hooks wired into llama / qwen2 / mistral / qwen3 families; static
   validation passes against a real Mistral-7B Q4_K_M checkpoint.
-- Remaining: first GPU end-to-end run of the GGUF path. The vendored kernel is
-  built at runtime by PyTorch's JIT extension builder, whose Windows/HIP
-  toolchain assumptions are the current source of friction (nvcc-only flags,
-  hipcc wrapper arg-mangling); fixes land in `kernel/gguf.py`, with a direct
-  clang or hipRTC-based loader as fallback options.
+- **DONE (2026-08-24): MoE GGUF adapters + the offload-decode TDR root cause.**
+  Two new GGUF families: **gpt-oss** (llama.cpp MXFP4 experts repacked at load
+  into the HF `mxfp4_triton` layout — `models/gpt_oss/gguf.py`, `--moe-backend
+  fused`) and **qwen35moe** (Qwen3.5/3.6 hybrid GDN MoE — `models/qwen3_5_moe/gguf.py`,
+  experts stay packed in generalized `q4_0`-schema banks accepting any
+  MMVQ-covered ggml type, mixed-type banks requantized to `FT_GGUF_BANK_PROMOTE`
+  [default Q5_1] at load, `--moe-backend offload`). Both verified end-to-end on
+  gfx1200 with synthetic tiny models (real-tokenizer, random-weight GGUFs).
+  **Root-caused the historical RDNA4 offload-decode `unspecified launch failure`**:
+  `kernel/pinned.py::host_register` was a silent no-op without the never-built
+  `_pinned_tensor` extension, so "pinned" expert banks stayed pageable; AND the
+  `device_ptr` host-VA-identity probe tested `hipHostMalloc` memory (unified)
+  while `hipHostRegister`ed banks map to different device VAs on Windows/WDDM —
+  the fused gather then dereferenced host VAs from the GPU. Fixed with a ctypes
+  HIP fallback (register + `hipHostGetDevicePointer` translation + a
+  registered-memory identity probe). Also fixed: MXFP4 dequant was 2x too large
+  (missing E8M0-half), GDN/fla Triton kernels verified on gfx1200, and sharded
+  (`-NNNNN-of-NNNNN.gguf`) GGUF loading. Known limit: a 35B-A3B Q4_K_M needs
+  ~19 GB of *locked* host RAM for offload banks — not reliable on a 32 GB
+  machine; use a Q3-class file there.
+  **gpt-oss-20b MXFP4 GGUF verified end-to-end on gfx1200: ~61 tok/s** with CUDA
+  graphs + fused MoE (~20.7 eager), harmony reasoning/final channels parsed. Two
+  more fixes landed for it: GGUF control tokens are now registered as special
+  added tokens at tokenizer conversion (they encoded as raw bytes before, so
+  chat-template markers reached the model as byte soup — affects every GGUF
+  arch), and `--reasoning-parser gpt_oss` works against the GGUF tokenizer.
+- **DONE (2026-08-23): first GPU end-to-end GGUF run** — Qwen2.5-3B-Instruct
+  Q4_K_M on an RX 9060 XT (gfx1200, Windows 11, ROCm 10.1.0a20260806 wheels):
+  server READY, coherent chat completions, **~93.6 tok/s** decode with the HIP
+  MMVQ kernels under CUDA-graph replay (the auto backend is now arch-aware:
+  Triton-under-capture only on gfx1201 where replay crashes; ~24.4 tok/s eager),
+  web UI working. **Sharded GGUF** (llama.cpp `-NNNNN-of-NNNNN.gguf` split sets)
+  loads natively — pass any shard, metadata reads from shard 1, tensors stream
+  across shards (`models/gguf/reader.py::gguf_shard_paths`). Fixes that landed
+  for this run:
+  torch `cpp_extension` hipify None-path guard (patch 4 in `dist/patch_upstream.py`),
+  `--offload-arch` emission in the tvm-ffi Windows HIP branch, a `thrust/complex.h`
+  shim in `csrc/gguf/jit_shim/` (TheRock wheels ship no rocThrust), `clang-cl`
+  as `CC` for triton-windows, space-free `TVM_FFI_CACHE_DIR`, venv-SDK-first
+  toolchain resolution, and gfx-arch autodetection in the dist scripts.
 - Known RDNA4 issues parked upstream: Triton wave64 cross-lane reduction bug;
   Triton MXFP4 MoE crash under CUDA-graph replay.
 

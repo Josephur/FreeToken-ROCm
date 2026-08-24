@@ -8,7 +8,7 @@ or to extend it (new GPU archs, new model adapters).
 | Item | Requirement |
 |---|---|
 | OS | Windows 11 (tested), PowerShell 5.1+ |
-| GPU | AMD RDNA3/RDNA4 consumer card (verified: RX 9070 XT, `gfx1201`, 16 GB) |
+| GPU | AMD RDNA3/RDNA4 consumer card (verified: RX 9070 XT `gfx1201` 16 GB; RX 9060 XT `gfx1200` 16 GB incl. packed GGUF) |
 | VRAM | 8 GB min for small dense models; MoE split-load untested on Windows yet |
 | RAM | 32 GB recommended |
 
@@ -39,10 +39,19 @@ Then install the local wheels (--no-deps keeps the stack consistent):
 
 ```powershell
 pip install F:\ROCM-versions\cp312\*.whl --no-deps --force-reinstall
+# the 'rocm' metapackage sdist too - it provides the rocm_sdk module torch imports at startup:
+pip install F:\ROCM-versions\cp312\rocm-*.tar.gz --no-deps --no-build-isolation
 
 # Triton with AMD backend + tvm-ffi come from plain PyPI:
 pip install triton-windows>=3.7.1 apache-tvm-ffi==0.1.13.post3
 ```
+
+Also download `torch==<ver>+rocm<stamp>` and `amd-torch-device-<arch>==<ver>+rocm<stamp>`
+(`--no-deps`) from the same index/stamp — the `rocm[...]` metapackage does not pull torch.
+FreeToken itself is installed `--no-deps`, so the full runtime dep set from
+`pyproject.toml` must be installed from PyPI as well (fastapi, uvicorn, transformers,
+einops, openai, prompt_toolkit, huggingface_hub, safetensors, numpy<2.5, pydantic,
+tqdm, modelscope, tornado, flashlib, ...) — `dist\install.ps1` now does all of this.
 
 Install FreeToken itself without CUDA extensions:
 
@@ -55,12 +64,13 @@ Or just run `dist\install.ps1`, which does all of step 3 plus step 4 automatical
 
 ## 4. Upstream package patches (automated)
 
-Three installed packages need small patches until merged upstream.
-`dist\patch_upstream.py` applies all three **idempotently**:
+Four installed packages need small patches until merged upstream.
+`dist\patch_upstream.py` applies all four **idempotently**:
 
 | Package | Patch | Reason |
 |---|---|---|
-| `tvm_ffi/cpp/extension.py` | HIP-aware Windows branch: hipcc flags without `-fPIC`/MSVC-style args, `--offload-arch` emission, `amdhip64.lib` linking, host C++ built with HIP `clang++` instead of `cl.exe` | MSVC rejects FreeToken's `RuntimeCheck` pack+default-arg idiom; clang handles CUDA-C++ JIT correctly |
+| `tvm_ffi/cpp/extension.py` | HIP-aware Windows branch: hipcc flags without `-fPIC`/MSVC-style args, `--offload-arch` emission (from `TVM_FFI_ROCM_ARCH_LIST` — without it the build silently targets gfx906), `amdhip64.lib` linking, host C++ built with HIP `clang++` instead of `cl.exe` | MSVC rejects FreeToken's `RuntimeCheck` pack+default-arg idiom; clang handles CUDA-C++ JIT correctly |
+| `torch/utils/cpp_extension.py` | guard `hipified_path is None` in the JIT `load()` path (mirrors the existing AOT guard) | a `.cu` source that hipify leaves unchanged maps to `None` → `TypeError` when building the packed-GGUF kernels |
 | `triton/backends/amd/compiler.py` | add `launch_pdl: bool = False` field to `HIPOptions` | NVIDIA-only launch kwarg otherwise crashes kernel bind on AMD |
 | `uvicorn/loops/asyncio.py` | return `SelectorEventLoop` instead of `ProactorEventLoop` on win32 | `zmq.asyncio` needs `add_reader`; Proactor lacks it → silent request hang |
 
@@ -71,11 +81,15 @@ kernels work, reductions are broken upstream; leave off by default.
 
 | Switch | Example value | Purpose |
 |---|---|---|
-| `HIP_PATH` | `G:\ROCM10RT-gfx1201` | hipcc + HIP libs for JIT builds/linking |
-| `TVM_FFI_ROCM_ARCH_LIST` | `gfx1201` | tvm-ffi emits `--offload-arch=<arch>` (defaults to gfx906 → dead kernels!) |
-| `TRITON_OVERRIDE_ARCH` | `gfx1201` | Triton codegen target |
-| `ROCM_SDK_TARGET_FAMILY` | `gfx1201` | device family for the rocm-sdk wheel runtime (TheRock nightly only - required until ROCm 7.16 / 10.1 is formally released, after which stable wheels replace the nightlies) |
-| `CC` | `<ROCM>\lib\llvm\bin\clang.EXE` | host compiler hint |
+| `HIP_PATH` | `<repo>\.venv\Lib\site-packages\_rocm_sdk_core` | hipcc + HIP libs for JIT builds/linking. Always the venv SDK — a machine-wide HIP SDK (`C:\Program Files\AMD\ROCm\...`) is a different toolchain and breaks JIT builds |
+| `TVM_FFI_ROCM_ARCH_LIST` | `gfx1200` | tvm-ffi emits `--offload-arch=<arch>` (defaults to gfx906 → dead kernels!) |
+| `TRITON_OVERRIDE_ARCH` | `gfx1200` | Triton codegen target |
+| `ROCM_SDK_TARGET_FAMILY` | `gfx1200` | device family for the rocm-sdk wheel runtime (TheRock nightly only - required until ROCm 7.16 / 10.1 is formally released, after which stable wheels replace the nightlies) |
+| `PYTORCH_ROCM_ARCH` | `gfx1200` | arch for torch cpp_extension JIT builds (packed-GGUF kernels) |
+| `CC` | `<ROCM>\lib\llvm\bin\clang-cl.exe` | host compiler hint. Must be the MSVC-driver `clang-cl`, not plain `clang` — triton-windows feeds it MSVC-style args (`python312.lib`, `/LIBPATH`) |
+| `HIP_DEVICE_LIB_PATH` | `<ROCM>\lib\llvm\amdgcn\bitcode` | device bitcode for direct-clang HIP compiles |
+| `TVM_FFI_CACHE_DIR` | `<repo>\.tvm-ffi-cache` | JIT build dir; must contain no spaces (ninja chokes on `C:\Users\First Last\.cache`) |
+| `ROCM_HOME` / `ROCM_PATH` + `PATH` prepend `<ROCM>\bin` | `<ROCM>` | make tvm-ffi/torch resolve the venv hipcc, not a system ROCm on PATH |
 | `FREETOKEN_SKIP_CUDA_EXT` | `1` | build-time only: skip nvcc extensions |
 
 `dist\run-server.ps1` sets all of these and calls `vcvarsall.bat` before launch

@@ -89,6 +89,7 @@ prefill, decode (~57 tok/s bf16 3B), SSE token streaming, and the bundled mini w
 | Qwen2.5-3B-Instruct GGUF | Q4_K_M (packed) | `FT_GGUF_BACKEND=triton` | ~6.6-7.6 tok/s | all-Triton fallback, useful for kernel triage |
 | **gpt-oss-20b GGUF** (MoE) | MXFP4 experts (packed) | `--moe-backend fused --num-pages 4096` (graphs ON) | **~61 tok/s** | harmony reasoning parsed correctly; graph capture AND replay of the MXFP4 MoE kernels work on gfx1200 (the graph-replay crash is gfx1201-only) |
 | gpt-oss-20b GGUF (MoE) | MXFP4 experts (packed) | same, `--cuda-graph-max-bs 0` (eager) | ~20.7 tok/s | fallback if graphs misbehave |
+| **Gemma-4-26B-A4B QAT GGUF** (MoE) | Q4_0 experts in pinned-RAM banks | `--moe-backend offload --moe-cache-size 2048 --num-pages 4096` (graphs ON) | **~62-73 tok/s** | upstream's `gemma4` GGUF adapter, first GPU run, zero code changes; ~12 GiB expert banks pinned in host RAM, GPU DMA-fetches misses; prefill ~690 tok/s; eager ~12 tok/s. llama.cpp b10630 same file: 84.8 tok/s all-in-VRAM (Vulkan), but only **15.0 tok/s** in its experts-in-RAM mode (`--n-cpu-moe`) — FreeToken's offload decode is ~4x faster in the config the offload design targets |
 
 Decode is memory-bandwidth-bound: BF16 3B moves ~6 GB/token against ~640 GB/s,
 so ~72 tok/s is near ceiling for this precision on one card. Quantized GGUF

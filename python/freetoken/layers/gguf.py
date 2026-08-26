@@ -13,6 +13,7 @@ TP is assumed to be 1 (the gemma4 GGUF path restricts to TP=1, like the HF path)
 
 from __future__ import annotations
 
+import functools
 import os
 
 import torch
@@ -84,18 +85,42 @@ def _dequant_triton(rows: torch.Tensor, qweight_type: int, m: int, n: int) -> to
 _GGUF_BACKEND = os.environ.get("FT_GGUF_BACKEND")  # "hip" | "triton" | None
 
 
+@functools.cache
+def _capture_needs_triton() -> bool:
+    """Whether graph capture must swap to the Triton kernels on this GPU.
+
+    gfx1201 (RX 9070 XT) crashes replaying the HIP extension kernels (HIP 719 /
+    driver TDR, issue #82). gfx1200 (RX 9060 XT) replays them fine and ~4x faster
+    than the Triton GEMM (93.6 vs 24.4 tok/s eager on Qwen2.5-3B Q4_K_M), so only
+    the known-bad arch pays the Triton fallback."""
+    if torch.version.hip is None:
+        return False
+    try:
+        arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+    except Exception:
+        return True  # unknown device: keep the safe fallback
+    return arch == "gfx1201"
+
+
 def _use_triton(x: torch.Tensor) -> bool:
-    """Triton path inside CUDA-graph captures: the HIP extension crashes replay
-    on RDNA4. FT_GGUF_BACKEND forces one globally."""
+    """Triton path inside CUDA-graph captures on archs whose driver crashes
+    replaying the HIP extension. FT_GGUF_BACKEND forces one globally."""
     if _GGUF_BACKEND == "triton":
         return True
     if _GGUF_BACKEND == "hip":
         return False
-    return x.is_cuda and torch.cuda.is_current_stream_capturing()
+    return (
+        x.is_cuda
+        and torch.cuda.is_current_stream_capturing()
+        and _capture_needs_triton()
+    )
 
 
 def fused_mul_mat_gguf(x: torch.Tensor, qweight: torch.Tensor, qweight_type: int) -> torch.Tensor:
     """y = x @ dequant(qweight).T, dispatched by batch size and quant type."""
+    out_features = qweight.shape[0]
+    if x.shape[0] == 0:
+        return x.new_empty((0, out_features))
     if qweight_type not in _UNQUANTIZED and _use_triton(x):
         return _gemm_triton(x, qweight, qweight_type)
     from freetoken.kernel.gguf import (
@@ -103,10 +128,6 @@ def fused_mul_mat_gguf(x: torch.Tensor, qweight: torch.Tensor, qweight_type: int
         ggml_mul_mat_a8,
         ggml_mul_mat_vec_a8,
     )
-
-    out_features = qweight.shape[0]
-    if x.shape[0] == 0:
-        return x.new_empty((0, out_features))
     if qweight_type in _UNQUANTIZED:
         return x @ qweight.T
     if x.shape[0] <= _MMVQ_SAFE and qweight_type in _MMVQ:

@@ -15,12 +15,30 @@
 # ============================================================
 param(
     [string]$Py = "py -3.12",         # leave as-is if you installed Python 3.12 normally
-    [string]$Arch = "gfx1201",        # your GPU family: gfx1201 = RX 9070 XT
+    [string]$Arch = "",               # your GPU family (gfx1200 = RX 9060 XT, gfx1201 = RX 9070 XT); auto-detected if empty
+    [string]$Stamp = "",              # pin every AMD wheel to one nightly stamp, e.g. 10.1.0a20260806 (empty = latest)
+    [string]$TorchVer = "2.11.0",     # torch build to pair with the stamp (pyproject pins >=2.11,<2.12)
     [string]$WheelDir = ""            # folder holding AMD .whl files (see below)
 )
 $ErrorActionPreference = "Stop"
 $REPO = Split-Path -Parent $PSScriptRoot
 $INDEX = "https://rocm.nightlies.amd.com/whl-multi-arch/"
+
+# ---- GPU family auto-detection (name -> gfx arch), overridable via -Arch ----
+if (-not $Arch) {
+    $gpuName = (Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "AMD|Radeon" } |
+                Select-Object -First 1 -ExpandProperty Name)
+    $Arch = switch -Regex ($gpuName) {
+        "RX 9070"           { "gfx1201"; break }
+        "RX 9060"           { "gfx1200"; break }
+        "RX 7900"           { "gfx1100"; break }
+        "RX 77\d0|RX 7800"  { "gfx1101"; break }
+        "RX 76\d0"          { "gfx1102"; break }
+        default             { "" }
+    }
+    if (-not $Arch) { throw "Could not map GPU '$gpuName' to a gfx arch - pass -Arch (e.g. -Arch gfx1200)" }
+    Write-Host "      detected GPU: $gpuName -> $Arch" -ForegroundColor Gray
+}
 $tag = ($Py -replace '\s', '') + "-" + $Arch.Replace(',', '+')
 if (-not $WheelDir) { $WheelDir = Join-Path $REPO "rocm-wheels\$tag" }
 $VENV = Join-Path $REPO ".venv"
@@ -37,16 +55,35 @@ Invoke-Expression "$Py -m venv `"$VENV`""
 
 # ---- Step 2: AMD GPU wheels -------------------------------------------
 Write-Host "[2/5] AMD GPU wheels (torch / ROCm) ..." -ForegroundColor Yellow
-if (-not (Test-Path "$WheelDir") -or -not (Get-ChildItem "$WheelDir" -Filter *.whl -ErrorAction SilentlyContinue)) {
-    Write-Host "      downloading AMD wheels (~2 GB, one time only) ..." -ForegroundColor Gray
-    New-Item -ItemType Directory -Force -Path $WheelDir | Out-Null
-    Invoke-Expression "$Py -m pip download --index-url $INDEX -d `"$WheelDir`" `"rocm[libraries,devel,device-$Arch]`""
+New-Item -ItemType Directory -Force -Path $WheelDir | Out-Null
+# reuse a device wheel dropped into the repo root (skips the biggest download)
+Get-ChildItem $REPO -Filter "rocm_sdk_device_$Arch-*.whl" -ErrorAction SilentlyContinue |
+    ForEach-Object { Copy-Item $_.FullName $WheelDir -ErrorAction SilentlyContinue }
+if (-not (Get-ChildItem "$WheelDir" -Recurse -Filter "torch-*.whl" -ErrorAction SilentlyContinue)) {
+    Write-Host "      downloading AMD wheels (~2 GB, one time only; already-present files are skipped) ..." -ForegroundColor Gray
+    # every AMD wheel must share ONE nightly stamp (see PORT_REQUIREMENTS.md #3)
+    $rocmSpec  = "rocm[libraries,devel,device-$Arch]"
+    $torchSpec = "torch"; $devSpec = "amd-torch-device-$Arch"
+    if ($Stamp) {
+        $rocmSpec  = "rocm[libraries,devel,device-$Arch]==$Stamp"
+        $torchSpec = "torch==$TorchVer+rocm$Stamp"
+        $devSpec   = "amd-torch-device-$Arch==$TorchVer+rocm$Stamp"
+    }
+    Invoke-Expression "$Py -m pip download --index-url $INDEX -d `"$WheelDir`" `"$rocmSpec`""
+    Invoke-Expression "$Py -m pip download --no-deps --index-url $INDEX -d `"$WheelDir`" `"$torchSpec`" `"$devSpec`""
 }
 $PIP install (Get-ChildItem $WheelDir -Recurse -Filter *.whl | ForEach-Object { $_.FullName }) --no-deps --force-reinstall
+# the 'rocm' metapackage sdist provides the rocm_sdk module torch's _rocm_init imports
+$rocmSdist = Get-ChildItem $WheelDir -Recurse -Filter "rocm-*.tar.gz" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($rocmSdist) { $PIP install $rocmSdist.FullName --no-deps --no-build-isolation }
 
 # ---- Step 3: engine + helpers -----------------------------------------
+# freetoken itself is installed --no-deps, so every runtime dep from pyproject.toml
+# must be listed here (CUDA-only extras excluded: flashinfer, sglang-kernel).
 Write-Host "[3/5] Installing FreeToken + helpers ..." -ForegroundColor Yellow
-$PIP install "triton-windows>=3.7.1" apache-tvm-ffi==0.1.13.post3 msgpack pyzmq psutil requests aiohttp partial_json_parser gguf
+$PIP install "triton-windows>=3.7.1" apache-tvm-ffi==0.1.13.post3 msgpack pyzmq psutil requests aiohttp partial_json_parser gguf `
+    einops fastapi uvicorn pydantic openai prompt_toolkit "transformers>=5.5,<6" huggingface_hub safetensors `
+    "numpy>=2.0,<2.5" tqdm modelscope tornado ninja setuptools wheel
 $env:FREETOKEN_SKIP_CUDA_EXT = "1"
 $PIP install -e "$REPO" --no-deps --no-build-isolation
 Remove-Item Env:FREETOKEN_SKIP_CUDA_EXT
@@ -57,7 +94,7 @@ Write-Host "[4/5] Applying 3 small compatibility patches ..." -ForegroundColor Y
 
 # ---- Step 5: verify -----------------------------------------------------
 Write-Host "[5/5] Checking your GPU ..." -ForegroundColor Yellow
-& $PYEXE -c "import torch; print('      torch', torch.__version__, '| HIP', torch.version.hip); print('      GPU:', torch.cuda.get_device_name(0))"
+& $PYEXE -c "import torch; print('      torch', torch.__version__, '| HIP', torch.version.hip); print('      GPU:', torch.cuda.get_device_name(0)); arch=torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]; print('      arch:', arch); assert arch=='$Arch', f'GPU arch {arch} != installed device wheels ($Arch) - rerun with -Arch {arch}'"
 
 Write-Host ""
 Write-Host "  All done! To chat with a model:" -ForegroundColor Green

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import struct
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -21,10 +22,43 @@ import torch
 
 
 def is_gguf_path(model_path: str) -> bool:
-    """A single ``.gguf`` file (the only GGUF layout FreeToken loads directly)."""
+    """A ``.gguf`` file -- single-file, or any shard of a llama.cpp split set."""
     return isinstance(model_path, str) and os.path.isfile(model_path) and model_path.endswith(
         ".gguf"
     )
+
+
+# llama.cpp split convention: <stem>-00001-of-00003.gguf. The first shard carries the
+# full KV metadata (config + tokenizer); every shard has its own tensor table.
+_SHARD_RE = re.compile(r"^(?P<stem>.+)-(?P<no>\d{5})-of-(?P<count>\d{5})\.gguf$")
+
+
+@functools.cache
+def gguf_shard_paths(model_path: str) -> tuple[str, ...]:
+    """All files of the GGUF, in shard order. A non-split file resolves to itself;
+    any shard of a split set resolves to the complete ordered set (so the user may
+    pass any of the files). Raises if sibling shards are missing."""
+    m = _SHARD_RE.match(os.path.basename(model_path))
+    if m is None:
+        return (model_path,)
+    dirname = os.path.dirname(model_path)
+    count = int(m["count"])
+    paths = tuple(
+        os.path.join(dirname, f"{m['stem']}-{i:05d}-of-{count:05d}.gguf")
+        for i in range(1, count + 1)
+    )
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError(
+            f"{model_path}: split GGUF is missing {len(missing)} of {count} shards, "
+            f"e.g. {missing[0]}"
+        )
+    return paths
+
+
+def _primary_shard(model_path: str) -> str:
+    """The file carrying the full KV metadata (shard 1 of a split, else the file)."""
+    return gguf_shard_paths(model_path)[0]
 
 
 # Canonical name of the metadata-only GGUF that ``convert_checkpoint`` drops into an FTW
@@ -49,7 +83,8 @@ def gguf_config_source(model_path: str) -> str | None:
     can parse, so no downstream code learns about the FTW wrapper.
     """
     if is_gguf_path(model_path):
-        return model_path
+        # For a split set, the full KV (config + tokenizer) lives in shard 1 only.
+        return _primary_shard(model_path)
     if isinstance(model_path, str) and os.path.isdir(model_path):
         cand = os.path.join(model_path, FTW_METADATA_GGUF)
         if os.path.isfile(cand):
@@ -67,6 +102,8 @@ def write_metadata_gguf(source_gguf: str, dest_path: str) -> None:
     """
     import gguf
 
+    shards = gguf_shard_paths(source_gguf)
+    source_gguf = shards[0]  # full KV lives in shard 1 of a split set
     reader = gguf.GGUFReader(source_gguf)
     assert reader.tensors, f"{source_gguf}: no tensors to bound the KV section"
     # The first tensor-info record starts exactly where the KV section ends (GGUF places no
@@ -79,7 +116,9 @@ def write_metadata_gguf(source_gguf: str, dest_path: str) -> None:
     # extra KV and bump kv_count (u64 at byte 16). Little-endian only -- the re-parse
     # below fails loudly on a big-endian source.
     key = OUTPUT_WEIGHT_PRESENT_KV.encode()
-    present = any(t.name == "output.weight" for t in reader.tensors)
+    present = any(
+        t.name == "output.weight" for shard in shards for t in _reader(shard).tensors
+    )
     buf += struct.pack("<Q", len(key)) + key
     buf += struct.pack("<I", int(gguf.GGUFValueType.BOOL)) + bytes([1 if present else 0])
     struct.pack_into("<Q", buf, 16, struct.unpack_from("<Q", buf, 16)[0] + 1)
@@ -128,20 +167,27 @@ def _reader(model_path: str):
 
 @functools.cache
 def load_gguf_metadata(model_path: str) -> dict[str, Any]:
-    """All GGUF KV metadata as ``{field_name: python_value}`` (arrays -> lists)."""
-    reader = _reader(model_path)
+    """All GGUF KV metadata as ``{field_name: python_value}`` (arrays -> lists).
+    For a split set this is shard 1's KV, which carries the full model metadata."""
+    reader = _reader(_primary_shard(model_path))
     return {name: field.contents() for name, field in reader.fields.items()}
 
 
 def gguf_architecture(model_path: str) -> str:
-    arch = _field_value(_reader(model_path), "general.architecture")
+    arch = _field_value(_reader(_primary_shard(model_path)), "general.architecture")
     if arch is None:
         raise ValueError(f"GGUF file {model_path} has no general.architecture")
     return str(arch)
 
 
 def iter_gguf_tensors(model_path: str) -> Iterator[GgufTensor]:
-    """Yield every tensor with its torch shape, ggml type, and packed block bytes."""
+    """Yield every tensor with its torch shape, ggml type, and packed block bytes.
+    For a split set, tensors stream shard by shard in shard order."""
+    for shard in gguf_shard_paths(model_path):
+        yield from _iter_shard_tensors(shard)
+
+
+def _iter_shard_tensors(model_path: str) -> Iterator[GgufTensor]:
     import gguf
 
     reader = _reader(model_path)
@@ -172,11 +218,14 @@ def iter_gguf_tensors(model_path: str) -> Iterator[GgufTensor]:
 
 
 def gguf_tensor_names(model_path: str) -> set[str]:
-    return {t.name for t in _reader(model_path).tensors}
+    return {
+        t.name for shard in gguf_shard_paths(model_path) for t in _reader(shard).tensors
+    }
 
 
 __all__ = [
     "is_gguf_path",
+    "gguf_shard_paths",
     "FTW_METADATA_GGUF",
     "OUTPUT_WEIGHT_PRESENT_KV",
     "gguf_config_source",

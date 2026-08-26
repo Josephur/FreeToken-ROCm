@@ -232,11 +232,10 @@ def _nvfp4_banks(model_path, model_config, device, dtype, dummy, parallel=False,
 
 def _q4_0_banks(model_path, model_config, device, dtype, dummy, parallel=False, workers=8, chunk=_PARALLEL_CHUNK, decode_target="gpu", layer_sink=None) -> ExpertBanks:
     if parallel:
-        raise NotImplementedError(
-            "parallel reader not implemented for q4_0: GGUF is a single packed file "
-            "(not safetensors), so the common reader doesn't apply -- it needs a GGUF-native "
-            "parallel reader (parse the tensor table, chunked O_DIRECT over the one file)"
-        )
+        # No GGUF-native parallel reader (single packed file, not safetensors) --
+        # degrade to the serial mmap loader instead of failing --expert-load auto.
+        logger.info("q4_0 expert banks: no parallel GGUF reader, loading serially")
+        parallel = False
     from freetoken.models.weight import load_q4_0_moe_expert_sources
 
     # Native GGUF Q4_0 routed experts: packed block bytes streamed to the GPU and

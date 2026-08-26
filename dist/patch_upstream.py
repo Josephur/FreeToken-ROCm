@@ -22,6 +22,7 @@ def patch_tvm_ffi() -> bool:
         "        if with_hip:\n"
         "            # patched: hipcc/clang host flags (MSVC-style args are rejected)\n"
         '            default_cuda_cflags = ["-O2", "-D__HIP_PLATFORM_AMD__=1"]\n'
+        "            default_cuda_cflags += _get_rocm_target()  # patched: else gfx906 default -> dead kernels\n"
         "        else:\n"
         '            default_cuda_cflags = ["-Xcompiler", "/std:c++17", "/O2"]'
     )
@@ -113,7 +114,9 @@ def patch_tvm_ffi() -> bool:
 
 
 def patch_triton_amd() -> None:
-    p = Path(sys.modules["triton"].__file__).parent / "backends" / "amd" / "compiler.py"
+    import triton
+
+    p = Path(triton.__file__).parent / "backends" / "amd" / "compiler.py"
     src = p.read_text(encoding="utf-8")
     if "launch_pdl" in src:
         print(f"[ok] triton amd already patched ({p})")
@@ -148,11 +151,45 @@ def patch_uvicorn() -> None:
     print(f"[patched] uvicorn ({f})")
 
 
+def patch_torch_hipify_jit() -> None:
+    """torch JIT load(): hipified_path is None when a source needed no changes; the
+    AOT CUDAExtension path guards this, the JIT path does not -> TypeError in
+    _write_ninja_file_to_build_library. Mirror the AOT guard."""
+    import torch.utils.cpp_extension as tce
+
+    f = Path(tce.__file__)
+    src = f.read_text(encoding="utf-8")
+    old = (
+        "                            hipified_sources.add(hipify_result[s_abs].hipified_path"
+        " if s_abs in hipify_result else s_abs)"
+    )
+    if old not in src:
+        assert "hipified_path is not None) else s_abs)" in src, (
+            "torch: hipify JIT anchor missing and guard not present"
+        )
+        print(f"[ok] torch cpp_extension already patched ({f})")
+        return
+    new = (
+        "                            # patched: hipified_path is None when the source needed no changes"
+        " (see the guarded lookup in CUDAExtension)\n"
+        "                            hipified_sources.add(hipify_result[s_abs].hipified_path if (s_abs in hipify_result and\n"
+        "                                                 hipify_result[s_abs].hipified_path is not None) else s_abs)"
+    )
+    src = src.replace(old, new)
+    f.write_text(src, encoding="utf-8")
+    print(f"[patched] torch cpp_extension hipify JIT ({f})")
+
+
 def main() -> int:
     try:
         patch_tvm_ffi()
     except Exception as e:
         print(f"[FAIL] tvm_ffi: {e}")
+        return 1
+    try:
+        patch_torch_hipify_jit()
+    except Exception as e:
+        print(f"[FAIL] torch cpp_extension: {e}")
         return 1
     try:
         patch_triton_amd()

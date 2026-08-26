@@ -29,7 +29,9 @@ Download/extract it, then either set HIP_PATH machine-wide or pass -RocmPath lat
 # 4. Runtime deps from bundled PyPI wheels
 & $PY -m pip install --no-index --find-links "$PSScriptRoot\pypi-wheels" `
     "triton-windows>=3.7.1" apache-tvm-ffi==0.1.13.post3 msgpack pyzmq psutil requests aiohttp `
-    partial_json_parser gguf
+    partial_json_parser gguf einops fastapi uvicorn pydantic openai prompt_toolkit `
+    "transformers>=5.5,<6" huggingface_hub safetensors "numpy>=2.0,<2.5" tqdm modelscope tornado `
+    flashlib==0.3.0
 
 # 5. FreeToken source (bundled) without CUDA extensions
 $env:FREETOKEN_SKIP_CUDA_EXT = "1"

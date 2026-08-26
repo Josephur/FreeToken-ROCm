@@ -73,9 +73,20 @@ def _rope_scaling(m: dict, prefix: str) -> dict | None:
     factor = m.get(f"{prefix}.rope.scaling.factor", 1.0)
     scaling: dict = {"rope_type": str(stype), "factor": float(factor)}
     if stype == "yarn":
-        orig = m.get(f"{prefix}.rope.scaling.original_max_position_embeddings")
+        # llama.cpp writes original_context_length; accept the HF spelling too
+        orig = m.get(
+            f"{prefix}.rope.scaling.original_context_length",
+            m.get(f"{prefix}.rope.scaling.original_max_position_embeddings"),
+        )
         if orig is not None:
             scaling["original_max_position_embeddings"] = int(orig)
+        for gguf_key, hf_key in (
+            ("yarn_beta_fast", "beta_fast"),
+            ("yarn_beta_slow", "beta_slow"),
+        ):
+            v = m.get(f"{prefix}.rope.scaling.{gguf_key}")
+            if v is not None:
+                scaling[hf_key] = float(v)
     if stype == "llama3":
         lo = m.get(f"{prefix}.rope.scaling.low_freq_factor")
         hi = m.get(f"{prefix}.rope.scaling.high_freq_factor")

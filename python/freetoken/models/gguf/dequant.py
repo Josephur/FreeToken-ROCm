@@ -221,13 +221,14 @@ def _nibble_blocks(raw: torch.Tensor, scale_cols: list[int]) -> tuple[torch.Tens
 
 
 def dequant_mxfp4(raw: torch.Tensor, out_dtype: torch.dtype) -> torch.Tensor:
-    """block_mxfp4 { uint8 e(E8M0); uint8 qs[16]; } -> d = 2^(e-127)."""
+    """block_mxfp4 { uint8 e(E8M0); uint8 qs[16]; } -> d = 2^(e-127) * 0.5."""
     n = raw.shape[0]
     e = raw[:, 0].to(torch.int64)
     qs = raw[:, 1:]
     lo = (qs & 0x0F).to(torch.int64)
     hi = (qs >> 4).to(torch.int64)
-    d = torch.pow(2.0, (e - 127).to(torch.float32))  # E8M0 half-bias
+    # llama.cpp GGML_E8M0_TO_FP32_HALF: 2^(e-127) * 0.5 (verified vs gguf-py dequantize)
+    d = torch.pow(2.0, (e - 128).to(torch.float32))
     out = raw.new_empty((n, 32), dtype=torch.float32)
     out[:, :16] = _MXFP4_LUT[lo] * d[:, None]
     out[:, 16:] = _MXFP4_LUT[hi] * d[:, None]

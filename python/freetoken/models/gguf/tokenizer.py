@@ -13,7 +13,9 @@ from typing import Any
 from .reader import gguf_architecture, load_gguf_metadata
 
 # GGUF architecture -> transformers GGUF tokenizer-converter key.
-_TOKENIZER_ARCH = {"gemma4": "gemma4_text"}
+# gpt-oss embeds a GPT-2-style BPE (o200k harmony vocab + merges) -> GGUFGPTConverter.
+# qwen35moe embeds the Qwen BPE (tokenizer.ggml.model = "gpt2") -> GGUFQwen2Converter.
+_TOKENIZER_ARCH = {"gemma4": "gemma4_text", "gpt-oss": "gpt2", "qwen35moe": "qwen2"}
 
 
 def load_gguf_tokenizer(model_path: str):
@@ -31,6 +33,25 @@ def load_gguf_tokenizer(model_path: str):
     fast, _extra = convert_gguf_tokenizer(conv_arch, tok_dict)
 
     tokens = tok_dict["tokens"]
+
+    # Register control tokens (token_type == 3) as special added tokens: they sit in
+    # the vocab but the converted encoder does not pattern-match them, so a chat
+    # template's markers (<|im_start|>, harmony <|channel|>/<|message|>, ...) would
+    # tokenize as raw bytes -- the model then sees (and mimics) byte-framing, and
+    # downstream channel/stop parsing breaks.
+    token_types = tok_dict.get("token_type")
+    if token_types is not None:
+        from tokenizers import AddedToken
+
+        specials = []
+        for t, ty in zip(tokens, token_types):
+            if int(ty) != 3:  # gguf TokenType.CONTROL
+                continue
+            if isinstance(t, bytes):
+                t = t.decode("utf-8", errors="replace")
+            specials.append(AddedToken(t, special=True, normalized=False))
+        if specials:
+            fast.add_special_tokens(specials)  # existing vocab entries keep their ids
 
     # The converted rust tokenizer has no BOS post-processor, so encode(...,
     # add_special_tokens=True) silently drops the BOS that GGUF's

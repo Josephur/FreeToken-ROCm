@@ -34,10 +34,13 @@ pip download --index-url $INDEX -d $amdWheels "rocm[libraries,devel,device-$Arch
 # torch ROCm + device module live in per-package folders on the index
 pip download --index-url "$INDEX/torch/" -d $amdWheels\torch torch --no-deps
 pip download --index-url "$INDEX/amd-torch-device-$Arch/" -d $amdWheels\torch "amd-torch-device-$Arch"
-# plain-PyPI runtime deps
+# plain-PyPI runtime deps (freetoken is installed --no-deps, so the full
+# pyproject runtime set must be bundled; CUDA-only extras excluded)
 pip download -d "$stage\pypi-wheels" `
     "triton-windows>=3.7.1" apache-tvm-ffi==0.1.13.post3 msgpack pyzmq psutil requests aiohttp `
-    partial_json_parser gguf setuptools wheel ninja
+    partial_json_parser gguf setuptools wheel ninja `
+    einops fastapi uvicorn pydantic openai prompt_toolkit "transformers>=5.5,<6" huggingface_hub `
+    safetensors "numpy>=2.0,<2.5" tqdm modelscope tornado flashlib==0.3.0
 
 Write-Host "== 3. Repo snapshot (source, no git/VCS junk) =="
 git -C $REPO archive --format=zip --output="$stage\repo.zip" HEAD

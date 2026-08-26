@@ -49,32 +49,107 @@ def alloc_pinned_tensor(*shape: int, dtype: torch.dtype) -> torch.Tensor:
     return ext.alloc_pinned_tensor(list(shape), dtype)
 
 
+@lru_cache(maxsize=1)
+def _hip_runtime():
+    """ctypes handle to the HIP runtime, for hipHostRegister/hipHostGetDevicePointer
+    when the ``_pinned_tensor`` extension is absent (the ROCm/Windows port never
+    builds it). The DLL is already loaded by torch, so CDLL by name resolves it."""
+    if getattr(torch.version, "hip", None) is None:
+        return None
+    import ctypes
+
+    for name in ("amdhip64_7.dll", "amdhip64.dll", "libamdhip64.so"):
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            continue
+    return None
+
+
 def host_register(addr: int, nbytes: int) -> None:
-    """cudaHostRegister ``nbytes`` at ``addr`` as portable+mapped (pin-after-fill)."""
+    """cudaHostRegister ``nbytes`` at ``addr`` as portable+mapped (pin-after-fill).
+
+    Without the extension this used to be a SILENT NO-OP, which left the expert
+    banks pageable -- the fused offload gather then dereferences unregistered host
+    memory from the GPU and dies with `unspecified launch failure` (the RDNA4
+    offload-decode TDR). On ROCm, register through the HIP runtime instead."""
     ext = _load_pinned_extension()
     if ext is not None:
         ext.host_register(addr, nbytes)
+        return
+    hip = _hip_runtime()
+    if hip is not None:
+        import ctypes
+
+        # hipHostRegisterPortable (1) | hipHostRegisterMapped (2)
+        status = hip.hipHostRegister(
+            ctypes.c_void_p(addr), ctypes.c_size_t(nbytes), ctypes.c_uint(3)
+        )
+        if status != 0:
+            raise RuntimeError(
+                f"hipHostRegister({nbytes} bytes) failed with hipError {status}"
+            )
+        return
+    # CUDA without the extension: keep the historical no-op (that path always ran
+    # with the extension built); the GPU-deref consumers are gated off it anyway.
 
 
 @lru_cache(maxsize=1)
 def _host_ptr_identity() -> bool:
     # cached per process: FreeToken pins one CUDA device per process (set at engine launch)
     ext = _load_pinned_extension()
-    if ext is None:
+    if ext is not None:
+        return bool(ext.host_ptr_identity())
+    hip = _hip_runtime()
+    if hip is None:
         return False
-    return bool(ext.host_ptr_identity())
+    import ctypes
+    import mmap
+
+    # Probe with hipHostREGISTERed memory -- how the expert banks are pinned. On
+    # Windows/WDDM+ROCm, registered memory maps to a DIFFERENT device address even
+    # though hipHostMalloc'd memory (torch pin_memory) is unified, so probing a
+    # pin_memory tensor here would wrongly report identity and hand the GPU host
+    # VAs (the offload-decode `unspecified launch failure`).
+    buf = mmap.mmap(-1, 4096)
+    addr = ctypes.addressof(ctypes.c_char.from_buffer(buf))
+    if hip.hipHostRegister(
+        ctypes.c_void_p(addr), ctypes.c_size_t(4096), ctypes.c_uint(3)
+    ) != 0:
+        return False
+    dev = ctypes.c_void_p()
+    ok = (
+        hip.hipHostGetDevicePointer(
+            ctypes.byref(dev), ctypes.c_void_p(addr), ctypes.c_uint(0)
+        )
+        == 0
+    )
+    identity = ok and dev.value == addr
+    hip.hipHostUnregister(ctypes.c_void_p(addr))
+    return identity
 
 
 def device_ptr(t: torch.Tensor) -> int:
     """Base address of ``t`` as the GPU must dereference it.
 
     Equals ``data_ptr()`` on CUDA tensors and wherever pinned host memory is
-    device-visible at its host VA (Linux/UVA). On Windows/WDDM registered memory maps
-    to a different device address, so zero-copy consumers must use this, not
-    ``data_ptr()``. Host tensors must be pinned+mapped."""
+    device-visible at its host VA (Linux/UVA, and ROCm/Windows per the probe).
+    Where registered memory maps to a different device address, zero-copy consumers
+    must use this, not ``data_ptr()``. Host tensors must be pinned+mapped."""
     if t.is_cuda or _host_ptr_identity():
         return t.data_ptr()
     ext = _load_pinned_extension()
-    if ext is None:
-        return t.data_ptr()
-    return ext.host_device_ptr(t.data_ptr())
+    if ext is not None:
+        return ext.host_device_ptr(t.data_ptr())
+    hip = _hip_runtime()
+    if hip is not None:
+        import ctypes
+
+        dev = ctypes.c_void_p()
+        status = hip.hipHostGetDevicePointer(
+            ctypes.byref(dev), ctypes.c_void_p(t.data_ptr()), ctypes.c_uint(0)
+        )
+        if status != 0:
+            raise RuntimeError(f"hipHostGetDevicePointer failed with hipError {status}")
+        return int(dev.value)
+    return t.data_ptr()

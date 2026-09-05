@@ -157,6 +157,8 @@ def _split_modes(types: dict[str, int]) -> dict[str, bool]:
 # *_proj names so the loader's qkv / gate_up merge rules apply unchanged.
 _SUFFIX_MAP = {
     "attn_norm.weight": "input_layernorm.weight",
+    "attn_q_norm.weight": "self_attn.q_norm.weight",
+    "attn_k_norm.weight": "self_attn.k_norm.weight",
     "attn_output.weight": "self_attn.o_proj.weight",
     "attn_o.weight": "self_attn.o_proj.weight",
     "attn_q.bias": "self_attn.q_proj.bias",

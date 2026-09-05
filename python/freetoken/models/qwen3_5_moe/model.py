@@ -80,6 +80,9 @@ class Qwen3_5Model(BaseOP):
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        import os as _os
+        if _os.environ.get("FT_DEBUG_LAYERS") and not torch.cuda.is_current_stream_capturing():
+            print("[fwd] ids:", input_ids.tolist()[:20], "pos:", get_global_ctx().batch.positions.tolist()[:20] if hasattr(get_global_ctx().batch.positions,'tolist') else get_global_ctx().batch.positions, flush=True)
         x = self.embed_tokens.forward(input_ids)
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
@@ -107,6 +110,10 @@ class Qwen3_5MoEForCausalLM(BaseLLMModel):
                 tie_word_embeddings=config.tie_word_embeddings,
                 tied_embedding=self.model.embed_tokens if config.tie_word_embeddings else None,
             )
+        # packed-GGUF load (qwen35 dense adapter): swap projections for GGUF ops
+        from .gguf_dense import maybe_convert_qwen35_dense_to_gguf
+
+        maybe_convert_qwen35_dense_to_gguf(self, config)
         super().__init__()
 
     def forward(self) -> torch.Tensor:

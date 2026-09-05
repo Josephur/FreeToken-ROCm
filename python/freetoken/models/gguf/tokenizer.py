@@ -15,7 +15,7 @@ from .reader import gguf_architecture, load_gguf_metadata
 # GGUF architecture -> transformers GGUF tokenizer-converter key.
 # gpt-oss embeds a GPT-2-style BPE (o200k harmony vocab + merges) -> GGUFGPTConverter.
 # qwen35moe embeds the Qwen BPE (tokenizer.ggml.model = "gpt2") -> GGUFQwen2Converter.
-_TOKENIZER_ARCH = {"gemma4": "gemma4_text", "gpt-oss": "gpt2", "qwen35moe": "qwen2"}
+_TOKENIZER_ARCH = {"gemma4": "gemma4_text", "gpt-oss": "gpt2", "qwen35moe": "qwen2", "qwen35": "qwen2"}
 
 
 def load_gguf_tokenizer(model_path: str):

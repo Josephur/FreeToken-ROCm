@@ -27,6 +27,8 @@ GGUF_ARCH_TO_REGISTRY: dict[str, str] = {
     "gpt-oss": "GptOssGGUFForCausalLM",
     # Hybrid GDN MoE (Qwen3.5/3.6-*-A*B): native GGUF expert banks via offload
     "qwen35moe": "Qwen35MoeGGUFForCausalLM",
+    # Hybrid GDN dense (Qwen3.5/3.8-27B): packed GGUF projections end to end
+    "qwen35": "Qwen35DenseGGUFForCausalLM",
 }
 
 

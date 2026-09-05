@@ -101,7 +101,7 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
         b_h4 = tl.zeros([BV, 64], dtype=tl.float32)
 
     # calculate offset
-    h += ((boh * H + i_h) * V * K).to(tl.int64)
+    h += ((boh * H + i_h).to(tl.int64) * V * K)  # int64: boh*H*V*K overflows i32 at large pools
     v += ((bos * H + i_h) * V).to(tl.int64)
     k += ((bos * Hg + i_h // (H // Hg)) * K).to(tl.int64)
     w += ((bos * H + i_h) * K).to(tl.int64)
@@ -112,8 +112,8 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
     stride_k = Hg * K
     stride_w = H * K
 
-    index = tl.load(initial_state_indices + i_n).to(tl.int32)
-    h0 = initial_state + index * stride_h
+    index = tl.load(initial_state_indices + i_n).to(tl.int64)
+    h0 = initial_state + index * stride_h  # int64: index*H*V*K overflows i32 (slot >= ~2731 at 48x128x128)
     ht = initial_state + index * stride_h
     if USE_INITIAL_STATE:
         h0 = h0 + i_h * V * K

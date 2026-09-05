@@ -100,7 +100,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
 
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_INITIAL_STATE:
-        idx = tl.load(h0_indices + i_n)
+        idx = tl.load(h0_indices + i_n).to(tl.int64)
         if idx >= 0:
             p_h0 = (
                 h0_source
@@ -127,7 +127,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     # Prepare intermediate state cache index if enabled
     cache_idx = -1
     if CACHE_INTERMEDIATE_STATES:
-        cache_idx = tl.load(intermediate_state_indices + i_n)
+        cache_idx = tl.load(intermediate_state_indices + i_n).to(tl.int64)
 
     step_idx = 0
     for _ in range(0, T):
@@ -138,7 +138,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
                 parent_step_idx = tl.sum(
                     tl.where(token_indices == step_idx, parent_idx_tokens, 0)
                 )
-                step_offset = parent_step_idx * HV * K * V
+                step_offset = parent_step_idx.to(tl.int64) * HV * K * V
                 cache_ptr = (
                     intermediate_states_buffer
                     + cache_idx * cache_steps * HV * K * V
@@ -208,7 +208,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
         # Cache intermediate states if enabled
         if CACHE_INTERMEDIATE_STATES:
             if cache_idx >= 0:
-                step_offset = step_idx * HV * K * V
+                step_offset = step_idx.to(tl.int64) * HV * K * V
                 cache_ptr = (
                     intermediate_states_buffer
                     + cache_idx * cache_steps * HV * K * V
@@ -232,7 +232,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     # Store final state back to h0_source with bounds checking
     if not DISABLE_STATE_UPDATE:
         if USE_INITIAL_STATE:
-            idx = tl.load(h0_indices + i_n)
+            idx = tl.load(h0_indices + i_n).to(tl.int64)
             if idx >= 0:
                 p_h0 = (
                     h0_source

@@ -20,7 +20,56 @@
 >
 > Fixes included: standard llama.cpp tiled-V head order for `qwen35` GGUFs,
 > int64 GDN state-slot offsets, RDNA2 fdot2/wave-size kernel workarounds.
-> **No warranties — tested only on one GPU model; see the status table.**
+> **Early test — no warranties.** Verified on exactly one GPU (Radeon Pro V620 32 GB)
+> and one model file; expect rough edges, and treat all numbers as preliminary.
+
+## Benchmarks on the V620 (early, preliminary)
+
+Single AMD Radeon Pro V620 32 GB (gfx1030), Linux, GPU clocks pinned, greedy,
+median of 3 runs, no EOS-stop. Same model file everywhere:
+`Unsloth-Qwen3.8-27B-UD-IQ4_XS.gguf` (Qwen3.8-27B, 27.3 B, 4.25 bpw, hybrid
+GDN + full-attention, 64 layers). Identical live prompts (~523 and ~4206
+tokens + 128 generated) for every engine.
+
+![V620 benchmark](docs/bench-v620.png)
+
+| Engine | Prompt t/s (523) | Prompt t/s (4206) | Decode t/s (short ctx) | Decode t/s (4206 ctx) |
+|---|---:|---:|---:|---:|
+| llama.cpp `c6d582a57` (b10802), plain, ROCm HIP | 437.6 | 469.6 | 19.3 | 18.9 |
+| llama.cpp + DFlash2 (production flags, see below) | 426.3 | 466.2 | 15.2 | 15.3 |
+| **FreeToken (this branch)** | **~1366**¹ | **~4452**¹ | 16.5 | 13.5 |
+
+¹ FreeToken prompt numbers are time-to-first-token derived and include fixed
+request overhead, so true kernel throughput is higher. llama.cpp numbers are
+its own server `timings`; `llama-bench` on the same build measures 509 t/s
+(pp512) and 19.6 t/s (tg128) in isolation.
+
+**DFlash2 config** (the draft-model speculative decoding the production
+llama.cpp service runs, which FreeToken does not have an equivalent of):
+draft = `ZLAB-Qwen3.8-27B-DFlash2-Q4_K_M.gguf` (1.1 GB MTP head),
+`--spec-type draft-dflash,ngram-map-k4v`, `--spec-draft-n-max 3`. Note: on
+raw greedy generation DFlash2 measured *slower* than plain llama.cpp (draft
+overhead exceeds acceptance outside chat-shaped text); your chat workload may
+differ.
+
+**Fairness notes.** llama.cpp ran with `--flash-attn on`, q8_0 KV cache, and
+262144 context, matching the production service; FreeToken's KV/state
+management is internal and cannot be matched exactly. llama-bench has no
+context-size flag (it auto-sizes minimally), so the server-vs-service rows are
+the exact like-for-like comparison at 262144 configured context; llama-bench
+is quoted as an isolated microbenchmark. FreeToken's decode drops with
+growing context (16.5 -> 13.5) while llama.cpp's barely moves (19.3 -> 18.9)
+— untuned, and the first thing we plan to look at.
+
+
+
+<p align="center">
+| <a href="https://www.flashml.ai/"><b>Download</b></a> | <a href="https://arxiv.org/abs/2608.16157"><b>Paper</b></a> | <a href="https://join.slack.com/t/flashml/shared_invite/zt-3zpdh5j10-9dwTXrgLiqpVxizhA9KVbA"><b>Developer Slack</b></a> | <a href="https://discord.gg/xzwSnMdsX"><b>Community Discord</b></a> | <a href="https://github.com/FlashML-org/FreeToken/blob/main/assets/freetoken-wechatgroup.png"><b>Community WeChat</b></a> |
+</p>
+
+
+Unlock datacenter-class intelligence on the hardware you already own — Run 290B+ frontier MoE models locally on your gaming PC at blistering interactive speeds.
+
 
 > [!IMPORTANT]
 > **This fork: native Windows + AMD ROCm port** (`FreeToken-rocm-test`).
@@ -29,13 +78,6 @@
 > completions (including SSE token streaming) through Triton-on-AMD attention
 > kernels and hipcc/tvm-ffi JIT-compiled CUDA-C++ kernels. See
 > [Windows ROCm port](#windows-rocm-port) below for requirements, setup and switches.
-
-<p align="center">
-| <a href="https://www.flashml.ai/"><b>Download</b></a> | <a href="https://arxiv.org/abs/2608.16157"><b>Paper</b></a> | <a href="https://join.slack.com/t/flashml/shared_invite/zt-3zpdh5j10-9dwTXrgLiqpVxizhA9KVbA"><b>Developer Slack</b></a> | <a href="https://discord.gg/xzwSnMdsX"><b>Community Discord</b></a> | <a href="https://github.com/FlashML-org/FreeToken/blob/main/assets/freetoken-wechatgroup.png"><b>Community WeChat</b></a> |
-</p>
-
-
-Unlock datacenter-class intelligence on the hardware you already own — Run 290B+ frontier MoE models locally on your gaming PC at blistering interactive speeds.
 
 ## About
 

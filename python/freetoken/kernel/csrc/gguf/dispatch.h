@@ -11,12 +11,16 @@
 #endif
 
 // Warp-shuffle wrappers the donor pulls from sgl-kernel's utils.h (CUDA variants).
+// HIP (unlike CUDA) requires a 64-bit lane mask for warp shuffles, and the
+// kernels assume 32-lane butterfly groups, so pin width=32 (same result under
+// wave64: HIP segments the wave into aligned 32-lane groups).
 #ifndef SGLANG_SHFL_XOR_SYNC
-#define SGLANG_SHFL_XOR_SYNC(mask, var, lane_mask) __shfl_xor_sync((mask), (var), (lane_mask))
+#define SGLANG_SHFL_XOR_SYNC(mask, var, lane_mask) \
+  __shfl_xor_sync((unsigned long long)(mask), (var), (lane_mask), 32)
 #endif
 #ifndef SGLANG_SHFL_XOR_SYNC_WIDTH
 #define SGLANG_SHFL_XOR_SYNC_WIDTH(mask, var, lane_mask, width) \
-  __shfl_xor_sync((mask), (var), (lane_mask), (width))
+  __shfl_xor_sync((unsigned long long)(mask), (var), (lane_mask), (width))
 #endif
 
 #define DISPATCH_CASE_FLOAT_TYPES(...)                 \

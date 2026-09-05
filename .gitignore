@@ -234,3 +234,14 @@ benchmarks/cross_framework
 /models/
 *.gguf
 /.tvm-ffi-cache/
+
+# Linux ROCm port: hipify/JIT build artifacts generated into the source tree
+python/freetoken/kernel/csrc/gguf/*_hip.cuh
+python/freetoken/kernel/csrc/gguf/*_hip.h
+python/freetoken/kernel/csrc/gguf/gguf_kernel.hip
+python/freetoken/kernel/csrc/gguf/jit_shim/hip*
+python/freetoken/kernel/csrc/gguf/jit_shim/c10/hip/
+python/freetoken/kernel/csrc/gguf/jit_shim/thrust/
+# Linux ROCm port: local environments / JIT caches
+.venv/
+.tvm-ffi-cache/

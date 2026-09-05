@@ -6,6 +6,22 @@
   </picture>
 </div>
 
+<p align="center">
+| <a href="#linux--amd-rocm-gfx1030--rdna2"><b>Linux + AMD ROCm (gfx1030/RDNA2) port — see below</b></a> |
+</p>
+
+> [!NOTE]
+> **This branch adds Linux + AMD ROCm support on gfx1030 (RDNA2).**
+> Verified end-to-end on an AMD Radeon Pro V620 (gfx1030, 32 GB) running
+> Linux: `ft serve` loads dense Qwen3.5/3.8 hybrid GGUF checkpoints (native
+> packed GGUF quants incl. IQ4_XS/Q5_K/Q6_K/Q8_0) and serves OpenAI-compatible
+> chat completions with thinking. See [docs/linux-rocm.md](docs/linux-rocm.md)
+> and [linux/](linux/) for install, environment and a systemd service example.
+>
+> Fixes included: standard llama.cpp tiled-V head order for `qwen35` GGUFs,
+> int64 GDN state-slot offsets, RDNA2 fdot2/wave-size kernel workarounds.
+> **No warranties — tested only on one GPU model; see the status table.**
+
 > [!IMPORTANT]
 > **This fork: native Windows + AMD ROCm port** (`FreeToken-rocm-test`).
 > Verified end-to-end on an AMD Radeon RX 9070 XT & RX 9060 XT (gfx1201 / gfx1200 / RDNA4, 16 GB, Windows 11):

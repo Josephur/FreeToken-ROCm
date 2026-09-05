@@ -1,0 +1,63 @@
+# /etc/systemd/system/freetoken-qwen38-27b.service
+# FreeToken (ROCm fork) serving the same Qwen3.8-27B UD-IQ4_XS GGUF that
+# llama-server-qwen3.8-27b-dflash2.AMD.service serves, on the Radeon Pro V620
+# (gfx1030). OpenAI-compatible API on port 8185.
+#
+# Feature parity notes vs the llama.cpp service:
+#   - DFlash2 / speculative decoding: FreeToken has no draft-model support -> not used.
+#   - mmproj (vision): FreeToken serves text-only -> not used.
+#   - KV cache q8_0 / flash-attn / batch flags: handled internally by FreeToken.
+#   - Sampling defaults come from the GGUF generation config (top_k 20, top_p 0.95).
+#
+# Patches this instance depends on (kept in the repo at
+# /home/YOURUSER/FreeToken-rocm-test): qwen35 dense GGUF adapter
+# (models/qwen3_5_moe/gguf_dense.py, handles the standard tiled-V head order),
+# gfx1030 kernel fixes (fdot2, 64-bit shfl masks, fla int64 slot offsets),
+# and a venv sitecustomize that imports triton before torch.
+[Unit]
+Description=FreeToken ROCm server, Qwen3.8-27B IQ4_XS (gguf) on Radeon Pro V620, port 8185
+After=network.target local-fs.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=YOURUSER
+SupplementaryGroups=render video
+WorkingDirectory=/home/YOURUSER/FreeToken-rocm-test
+# rocm-smi pins GPU clocks while the server runs (best-effort, needs perms)
+ExecStartPre=+/bin/bash -c '/opt/rocm/bin/rocm-smi --setperflevel high -d 0'
+ExecStart=/home/YOURUSER/FreeToken-rocm-test/.venv/bin/ft serve \
+  --model /home/YOURUSER/models/Qwen/3.8/Unsloth-Qwen3.8-27B-UD-IQ4_XS.gguf \
+  --host 0.0.0.0 \
+  --port 8185 \
+  --served-model-name qwen3.8-27b-freetoken \
+  --max-seq-len-override 262144 \
+  --max-running-requests 1 \
+  --sampling-defaults model
+ExecStopPost=+/bin/bash -c '/opt/rocm/bin/rocm-smi --setperflevel auto -d 0'
+
+# ROCm runtime: use the venv's matched nightly SDK (HIP 7.16), not /opt/rocm (7.2)
+Environment=HIP_PATH=/home/YOURUSER/FreeToken-rocm-test/.venv/lib/python3.12/site-packages/_rocm_sdk_core
+Environment=ROCM_HOME=/home/YOURUSER/FreeToken-rocm-test/.venv/lib/python3.12/site-packages/_rocm_sdk_core
+Environment=ROCM_PATH=/home/YOURUSER/FreeToken-rocm-test/.venv/lib/python3.12/site-packages/_rocm_sdk_core
+Environment=HIP_DEVICE_LIB_PATH=/home/YOURUSER/FreeToken-rocm-test/.venv/lib/python3.12/site-packages/_rocm_sdk_core/lib/llvm/amdgcn/bitcode
+Environment=PATH=/home/YOURUSER/FreeToken-rocm-test/.venv/lib/python3.12/site-packages/_rocm_sdk_core/bin:/home/YOURUSER/FreeToken-rocm-test/.venv/bin:/usr/local/bin:/usr/bin
+Environment=TVM_FFI_ROCM_ARCH_LIST=gfx1030
+Environment=PYTORCH_ROCM_ARCH=gfx1030
+Environment=TRITON_OVERRIDE_ARCH=gfx1030
+Environment=ROCM_SDK_TARGET_FAMILY=gfx1030
+Environment=TVM_FFI_CACHE_DIR=/home/YOURUSER/FreeToken-rocm-test/.tvm-ffi-cache
+Environment=CC=/home/YOURUSER/FreeToken-rocm-test/.venv/lib/python3.12/site-packages/_rocm_sdk_core/lib/llvm/bin/clang
+Environment=CXX=/home/YOURUSER/FreeToken-rocm-test/.venv/lib/python3.12/site-packages/_rocm_sdk_core/lib/llvm/bin/clang++
+Environment=HIP_VISIBLE_DEVICES=0
+Environment=PYTORCH_ALLOC_CONF=expandable_segments:True
+Environment=FT_GGUF_DEQUANT_LOG=0
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+LimitMEMLOCK=infinity
+LimitCORE=infinity
+
+[Install]
+WantedBy=multi-user.target

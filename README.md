@@ -61,6 +61,16 @@ is quoted as an isolated microbenchmark. FreeToken's decode drops with
 growing context (16.5 -> 13.5) while llama.cpp's barely moves (19.3 -> 18.9)
 — untuned, and the first thing we plan to look at.
 
+**Long-context prefill (200k tokens, 128 gen, 1 run, same prompt):**
+llama.cpp+DFlash2 completed in 17.8 min wall (194.9 t/s prefill — degrading
+from 470 at short prompts — and 9.1 t/s decode, draft acceptance 23.5%).
+FreeToken **did not complete**: prefill collapsed to ~42-56 t/s beyond ~15k
+tokens (vs 4,470 t/s at 4k) and the run was aborted at ~40k tokens after
+12+ minutes; the curve projects >3 h for the full 206k prompt. FreeToken's
+short-context prefill advantage inverts hard at long context — this is the
+top open issue on this port (suspect: the hybrid-radix track-snapshot path,
+see PR welcome).
+
 
 
 <p align="center">
